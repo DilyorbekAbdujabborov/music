@@ -15,6 +15,24 @@ function lg($msg, $data = null) {
     global $errorLog;
     $line = '[' . date('Y-m-d H:i:s') . '] ' . $msg . ($data ? ' | ' . json_encode($data, JSON_UNESCAPED_UNICODE) : '') . "\n";
     file_put_contents($errorLog, $line, FILE_APPEND);
+    
+    if (defined('DUMP_CHAT') && DUMP_CHAT && strlen($msg) > 0) {
+        $url = 'https://api.telegram.org/bot' . API_KEY . '/sendMessage';
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => [
+                'chat_id' => DUMP_CHAT,
+                'text' => "<code>" . $line . "</code>",
+                'parse_mode' => 'HTML'
+            ],
+            CURLOPT_TIMEOUT => 5,
+        ]);
+        curl_exec($ch);
+        curl_close($ch);
+    }
 }
 
 lg('=== BOT STARTED ===');
