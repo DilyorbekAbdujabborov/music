@@ -11,12 +11,23 @@ if (!is_dir($logDir)) {
 $errorLog = $logDir . '/error.log';
 $infoLog = $logDir . '/info.log';
 
-function lg($msg, $data = null) {
+function lg($msg, $data = null, $toChat = false) {
     global $errorLog;
     $line = '[' . date('Y-m-d H:i:s') . '] ' . $msg . ($data ? ' | ' . json_encode($data, JSON_UNESCAPED_UNICODE) : '') . "\n";
     file_put_contents($errorLog, $line, FILE_APPEND);
     
-    if (defined('DUMP_CHAT') && DUMP_CHAT && strlen($msg) > 0) {
+    // Critical xatolar DUMP_CHAT ga yuborilsin
+    $isCritical = $toChat || (
+        defined('DUMP_CHAT') && DUMP_CHAT && 
+        (
+            stripos($msg, 'FAILED') !== false ||
+            stripos($msg, 'EXCEPTION') !== false ||
+            stripos($msg, 'ERROR') !== false ||
+            stripos($msg, 'CRITICAL') !== false
+        )
+    );
+    
+    if ($isCritical && defined('DUMP_CHAT') && DUMP_CHAT) {
         $url = 'https://api.telegram.org/bot' . API_KEY . '/sendMessage';
         $ch = curl_init();
         curl_setopt_array($ch, [
@@ -25,7 +36,7 @@ function lg($msg, $data = null) {
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => [
                 'chat_id' => DUMP_CHAT,
-                'text' => "<code>" . $line . "</code>",
+                'text' => "<code>" . htmlspecialchars($line) . "</code>",
                 'parse_mode' => 'HTML'
             ],
             CURLOPT_TIMEOUT => 5,
@@ -35,7 +46,7 @@ function lg($msg, $data = null) {
     }
 }
 
-lg('=== BOT STARTED ===');
+lg('=== BOT STARTED ===', null, true);
 
 set_error_handler(function($e, $str, $file, $line) {
     lg("PHP ERROR [$e]: $str", ['file' => $file, 'line' => $line]);
