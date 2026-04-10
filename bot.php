@@ -339,12 +339,103 @@ function saveTrack($pdo, $data) {
     ]);
 }
 
+// Scraper - YouTube API
+function searchYoutube($query) {
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => 'https://mp3juice3.ninja/api/yt-data',
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode(['query' => $query]),
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Accept: application/json',
+            'Origin: https://mp3juice3.ninja',
+            'Referer: https://mp3juice3.ninja/',
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
+        ],
+        CURLOPT_TIMEOUT => 20,
+    ]);
+    $res = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($res && $code === 200) {
+        $data = json_decode($res, true);
+        return $data['items'] ?? [];
+    }
+    return [];
+}
+
+function getDownloadUrl($youtubeUrl) {
+    // Random CDN olish
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => 'https://media.savetube.vip/api/random-cdn',
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => [
+            'Origin: https://mp3juice3.ninja',
+            'Referer: https://mp3juice3.ninja/',
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
+        ],
+        CURLOPT_TIMEOUT => 10,
+    ]);
+    $res = curl_exec($ch);
+    curl_close($ch);
+    
+    $cdnData = json_decode($res, true);
+    $cdn = $cdnData['cdn'] ?? 'cdn403.savetube.vip';
+    
+    // Info olish
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => "https://{$cdn}/v2/info",
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode(['url' => $youtubeUrl]),
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Origin: https://mp3juice3.ninja',
+            'Referer: https://mp3juice3.ninja/',
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
+        ],
+        CURLOPT_TIMEOUT => 20,
+    ]);
+    $res = curl_exec($ch);
+    curl_close($ch);
+    
+    $info = json_decode($res, true);
+    $key = $info['data'] ?? '';
+    
+    if (!$key) return null;
+    
+    // Download URL olish
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => "https://{$cdn}/download",
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode(['downloadType' => 'audio', 'quality' => 128, 'key' => $key]),
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Origin: https://mp3juice3.ninja',
+            'Referer: https://mp3juice3.ninja/',
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
+        ],
+        CURLOPT_TIMEOUT => 20,
+    ]);
+    $res = curl_exec($ch);
+    curl_close($ch);
+    
+    $download = json_decode($res, true);
+    return $download['data']['downloadUrl'] ?? null;
+}
+
 // Scraper
 $SOURCE_DOMAINS = [
+    ['base' => 'https://mp3juice3.ninja', 'type' => 'youtube'],
     ['base' => 'https://eu.hitmo-top.com', 'download' => 'https://s2.deliciouspeaches.com'],
     ['base' => 'https://hitmo.top', 'download' => 'https://dl.hitmo.top'],
-    ['base' => 'https://hitmo.me', 'download' => 'https://dl.hitmo.me'],
-    ['base' => 'https://www.mp3juice.cc', 'download' => 'https://www.mp3juice.cc'],
 ];
 
 $USER_AGENTS = [
@@ -477,6 +568,39 @@ function scrapePage($query, $page = 1, $domain = null) {
     $base = $domain['base'];
     $download = $domain['download'];
     $start = ($page - 1) * ITEMS_PER_PAGE;
+    
+    // YouTube API - mp3juice3.ninja
+    if (($domain['type'] ?? '') === 'youtube' || strpos($domain['base'], 'mp3juice') !== false) {
+        lg("YouTube API: $query");
+        $items = searchYoutube($query);
+        
+        $tracks = [];
+        foreach ($items as $item) {
+            $title = $item['title'] ?? '';
+            $ytUrl = $item['url'] ?? '';
+            $thumb = $item['thumbnail'] ?? '';
+            
+            // Title dan artist va title ajratish
+            $artist = 'Unknown';
+            if (strpos($title, ' - ') !== false) {
+                list($artist, $title) = explode(' - ', $title, 2);
+            }
+            
+            $tracks[] = [
+                'title' => $title,
+                'artist' => $artist,
+                'url' => $ytUrl,
+                'img' => $thumb,
+                'download_url' => $ytUrl, // YouTube URL - keyin download qilamiz
+                'source' => 'youtube',
+            ];
+        }
+        
+        lg("YouTube found " . count($tracks) . " tracks");
+        return ['tracks' => $tracks, 'pagination' => ['currentPage' => 1, 'totalPages' => 1], 'domain' => $domain];
+    }
+    
+    // Fallback - hitmo scraping
     $q = urlencode($query);
     $url = $start === 0 ? "$base/search?q=$q" : "$base/search/start/$start?q=$q";
     
@@ -503,6 +627,7 @@ function scrapePage($query, $page = 1, $domain = null) {
     
     $html = $result['data'];
     $tracks = [];
+    $download = $domain['download'] ?? '';
     
     preg_match_all('/data-musmeta=\'([^\']+)\'/', $html, $matches);
     
@@ -522,6 +647,7 @@ function scrapePage($query, $page = 1, $domain = null) {
             'url' => $meta['url'],
             'img' => $meta['img'] ?? null,
             'download_url' => $downloadUrl,
+            'source' => 'hitmo',
         ];
     }
     
@@ -623,7 +749,23 @@ function buildTrackResult($track, $key, $query) {
 // Upload file
 function uploadFile($track, $md5) {
     global $pdo;
-    $audioResult = downloadFile($track['download_url']);
+    
+    $downloadUrl = $track['download_url'] ?? '';
+    $source = $track['source'] ?? '';
+    
+    // YouTube dan download
+    if ($source === 'youtube' || strpos($downloadUrl, 'youtube.com') !== false || strpos($downloadUrl, 'youtu.be') !== false) {
+        lg("YouTube download: " . $downloadUrl);
+        $downloadUrl = getDownloadUrl($downloadUrl);
+        
+        if (!$downloadUrl) {
+            lg("YouTube download URL failed");
+            return null;
+        }
+        lg("Got download URL: " . substr($downloadUrl, 0, 50) . "...");
+    }
+    
+    $audioResult = downloadFile($downloadUrl);
     
     if (!$audioResult['ok']) {
         lg("Download failed: " . $audioResult['error']);
