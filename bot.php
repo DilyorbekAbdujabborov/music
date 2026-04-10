@@ -163,6 +163,72 @@ try {
         [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
     );
     lg('DB Connected');
+    
+    // Auto create tables
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS `tracks` (
+            `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            `md5` VARCHAR(32) NOT NULL UNIQUE,
+            `title` VARCHAR(255) NOT NULL,
+            `artist` VARCHAR(255) NOT NULL,
+            `source_url` TEXT,
+            `download_url` TEXT,
+            `img` TEXT,
+            `file_id` VARCHAR(255) DEFAULT NULL,
+            `file_id_saved_at` DATETIME DEFAULT NULL,
+            `id3_tagged` TINYINT(1) DEFAULT 0,
+            `downloads` INT UNSIGNED DEFAULT 0,
+            `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX `idx_md5` (`md5`),
+            INDEX `idx_file_id` (`file_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+    
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS `users` (
+            `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            `telegram_id` BIGINT UNSIGNED NOT NULL UNIQUE,
+            `first_name` VARCHAR(255) DEFAULT NULL,
+            `username` VARCHAR(255) DEFAULT NULL,
+            `total_searches` INT UNSIGNED DEFAULT 0,
+            `total_downloads` INT UNSIGNED DEFAULT 0,
+            `last_seen` DATETIME DEFAULT CURRENT_TIMESTAMP,
+            `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX `idx_telegram_id` (`telegram_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+    
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS `search_logs` (
+            `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            `user_id` BIGINT UNSIGNED NOT NULL,
+            `query` VARCHAR(255) NOT NULL,
+            `results_count` INT UNSIGNED DEFAULT 0,
+            `source` ENUM('direct', 'inline') DEFAULT 'direct',
+            `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX `idx_user_id` (`user_id`),
+            INDEX `idx_query` (`query`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+    
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS `ads` (
+            `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            `title` VARCHAR(255) NOT NULL,
+            `description` TEXT NOT NULL,
+            `url` VARCHAR(500) DEFAULT '',
+            `ad_type` ENUM('text', 'photo', 'video', 'gif', 'banner') DEFAULT 'text',
+            `status` ENUM('pending', 'active', 'paused', 'expired', 'rejected') DEFAULT 'pending',
+            `start_at` DATETIME NOT NULL,
+            `end_at` DATETIME NOT NULL,
+            `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX `idx_status` (`status`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+    
+    lg('DB Tables initialized');
 } catch (PDOException $e) {
     lg('DB Connection FAILED', ['error' => $e->getMessage()]);
 }
