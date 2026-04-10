@@ -151,7 +151,7 @@ $inline_msg_id = $callback_query['inline_message_id'] ?? '';
 // Inline variables
 $inline_id = $inline_query['id'] ?? '';
 $inline_query_text = trim($inline_query['query'] ?? '');
-$inline_offset = isset($inline_query['offset']) ? (int)$inline_query['offset'] : 1;
+$inline_offset = isset($inline_query['offset']) && (int)$inline_query['offset'] > 0 ? (int)$inline_query['offset'] : 1;
 
 // Database
 $pdo = null;
@@ -335,9 +335,16 @@ $SOURCE_DOMAINS = [
 ];
 
 $USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15',
 ];
 
 function getUA() {
@@ -345,39 +352,58 @@ function getUA() {
     return $USER_AGENTS[array_rand($USER_AGENTS)];
 }
 
-function httpRequest($url, $retries = 2) {
-    $baseDelay = 1000;
+function httpRequest($url, $retries = 3) {
+    $baseDelay = 1500;
     for ($i = 0; $i <= $retries; $i++) {
         $ch = curl_init();
+        $ua = getUA();
         curl_setopt_array($ch, [
             CURLOPT_URL => $url,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 15,
+            CURLOPT_TIMEOUT => 20,
             CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 5,
             CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_ENCODING => '',
             CURLOPT_HTTPHEADER => [
-                'User-Agent: ' . getUA(),
-                'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language: en-US,en;q=0.9',
+                "User-Agent: $ua",
+                'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language: en-US,en;q=0.9,ru;q=0.8',
+                'Accept-Encoding: gzip, deflate, br',
+                'Connection: keep-alive',
+                'Upgrade-Insecure-Requests: 1',
+                'Sec-Fetch-Dest: document',
+                'Sec-Fetch-Mode: navigate',
+                'Sec-Fetch-Site: none',
+                'Sec-Fetch-User: ?1',
+                'Cache-Control: max-age=0',
             ],
         ]);
+        
         $data = curl_exec($ch);
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);
         curl_close($ch);
         
-        if ($data && $code === 200) {
+        // Decompress if needed
+        if ($data && strlen($data) > 0) {
+            if (strpos($data, "\x1f\x8b") === 0) {
+                $data = @gzdecode($data);
+            }
+        }
+        
+        if ($data && $code === 200 && strlen($data) > 100) {
             return ['ok' => true, 'data' => $data];
         }
         
-        if ($i < $retries && ($code >= 500 || $code === 403 || $code === 429 || $err)) {
-            $delay = ($baseDelay * pow(2, $i) + rand(0, 500)) / 1000;
-            lg("Retry $i for $url after {$delay}s", ['code' => $code]);
-            usleep((int)($delay * 1000000));
+        if ($i < $retries) {
+            $delay = ($baseDelay * pow(2, $i) + rand(0, 1000)) / 1000;
+            lg("Retry $i for " . substr($url, 0, 50) . "... after {$delay}s", ['code' => $code, 'len' => strlen($data)]);
+            sleep((int)$delay);
         }
     }
     
-    return ['ok' => false, 'error' => $err ?? "HTTP $code"];
+    return ['ok' => false, 'error' => $err ?: "HTTP $code"];
 }
 
 function downloadFile($url, $retries = 2) {
