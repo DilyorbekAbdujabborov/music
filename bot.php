@@ -66,6 +66,7 @@ define('DB_HOST', getenv('DB_HOST') ?: '');
 define('DB_USER', getenv('DB_USER') ?: '');
 define('DB_PASS', getenv('DB_PASS') ?: '');
 define('DB_NAME', getenv('DB_NAME') ?: '');
+define('PROXY', getenv('PROXY') ?: '');
 define('PAGE_SIZE', 10);
 define('ITEMS_PER_PAGE', 48);
 
@@ -332,6 +333,7 @@ $SOURCE_DOMAINS = [
     ['base' => 'https://eu.hitmo-top.com', 'download' => 'https://s2.deliciouspeaches.com'],
     ['base' => 'https://hitmo.top', 'download' => 'https://dl.hitmo.top'],
     ['base' => 'https://hitmo.me', 'download' => 'https://dl.hitmo.me'],
+    ['base' => 'https://www.mp3juice.cc', 'download' => 'https://www.mp3juice.cc'],
 ];
 
 $USER_AGENTS = [
@@ -353,14 +355,17 @@ function getUA() {
 }
 
 function httpRequest($url, $retries = 3) {
+    global $PROXY;
     $baseDelay = 1500;
+    
     for ($i = 0; $i <= $retries; $i++) {
         $ch = curl_init();
         $ua = getUA();
-        curl_setopt_array($ch, [
+        
+        $opts = [
             CURLOPT_URL => $url,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 20,
+            CURLOPT_TIMEOUT => 25,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS => 5,
             CURLOPT_SSL_VERIFYPEER => false,
@@ -368,7 +373,7 @@ function httpRequest($url, $retries = 3) {
             CURLOPT_HTTPHEADER => [
                 "User-Agent: $ua",
                 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language: en-US,en;q=0.9,ru;q=0.8',
+                'Accept-Language: en-US,en;q=0.9,ru;q=0.8,uz;q=0.7',
                 'Accept-Encoding: gzip, deflate, br',
                 'Connection: keep-alive',
                 'Upgrade-Insecure-Requests: 1',
@@ -377,19 +382,26 @@ function httpRequest($url, $retries = 3) {
                 'Sec-Fetch-Site: none',
                 'Sec-Fetch-User: ?1',
                 'Cache-Control: max-age=0',
+                'DNT: 1',
             ],
-        ]);
+        ];
+        
+        // Proxy qo'shish
+        if (!empty($PROXY)) {
+            $opts[CURLOPT_PROXY] = PROXY;
+            $opts[CURLOPT_HTTPPROXYTUNNEL] = 1;
+        }
+        
+        curl_setopt_array($ch, $opts);
         
         $data = curl_exec($ch);
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);
         curl_close($ch);
         
-        // Decompress if needed
-        if ($data && strlen($data) > 0) {
-            if (strpos($data, "\x1f\x8b") === 0) {
-                $data = @gzdecode($data);
-            }
+        // Decompress
+        if ($data && strlen($data) > 0 && strpos($data, "\x1f\x8b") === 0) {
+            $data = @gzdecode($data);
         }
         
         if ($data && $code === 200 && strlen($data) > 100) {
@@ -398,7 +410,7 @@ function httpRequest($url, $retries = 3) {
         
         if ($i < $retries) {
             $delay = ($baseDelay * pow(2, $i) + rand(0, 1000)) / 1000;
-            lg("Retry $i for " . substr($url, 0, 50) . "... after {$delay}s", ['code' => $code, 'len' => strlen($data)]);
+            lg("Retry $i for " . substr($url, 0, 50) . "... after {$delay}s", ['code' => $code, 'proxy' => !empty($PROXY)]);
             sleep((int)$delay);
         }
     }
@@ -407,29 +419,37 @@ function httpRequest($url, $retries = 3) {
 }
 
 function downloadFile($url, $retries = 2) {
+    global $PROXY;
     for ($i = 0; $i <= $retries; $i++) {
         $ch = curl_init();
-        curl_setopt_array($ch, [
+        $opts = [
             CURLOPT_URL => $url,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 30,
+            CURLOPT_TIMEOUT => 40,
             CURLOPT_SSL_VERIFYPEER => false,
             CURLOPT_HTTPHEADER => [
                 'User-Agent: ' . getUA(),
                 'Referer: https://hitmo.top/',
             ],
-        ]);
+        ];
+        
+        if (!empty($PROXY)) {
+            $opts[CURLOPT_PROXY] = PROXY;
+            $opts[CURLOPT_HTTPPROXYTUNNEL] = 1;
+        }
+        
+        curl_setopt_array($ch, $opts);
         $data = curl_exec($ch);
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);
         curl_close($ch);
         
-        if ($data && $code === 200) {
+        if ($data && $code === 200 && strlen($data) > 1000) {
             return ['ok' => true, 'data' => $data];
         }
         
         if ($i < $retries) {
-            usleep((int)(500000 * pow(2, $i)));
+            sleep(pow(2, $i));
         }
     }
     
