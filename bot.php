@@ -339,20 +339,16 @@ function saveTrack($pdo, $data) {
     ]);
 }
 
-// Scraper - YouTube API
+// Scraper - YouTube API (Tubidy/flvto)
 function searchYoutube($query) {
     $ch = curl_init();
     curl_setopt_array($ch, [
-        CURLOPT_URL => 'https://mp3juice3.ninja/api/yt-data',
+        CURLOPT_URL => 'https://test.flvto.online/search/?q=' . urlencode($query),
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode(['query' => $query]),
         CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
             'Accept: application/json',
-            'Origin: https://mp3juice3.ninja',
-            'Referer: https://mp3juice3.ninja/',
-            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
+            'Referer: https://www39.tubidy.buzz/',
         ],
         CURLOPT_TIMEOUT => 20,
     ]);
@@ -360,82 +356,57 @@ function searchYoutube($query) {
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     
+    lg("Search API response code: $code");
+    
     if ($res && $code === 200) {
         $data = json_decode($res, true);
+        lg("Search found " . count($data['items'] ?? []) . " items");
         return $data['items'] ?? [];
     }
+    lg("Search failed: HTTP $code");
     return [];
 }
 
-function getDownloadUrl($youtubeUrl) {
-    // Random CDN olish
+function getDownloadUrl($videoId) {
+    lg("Converting video: $videoId");
+    
     $ch = curl_init();
     curl_setopt_array($ch, [
-        CURLOPT_URL => 'https://media.savetube.vip/api/random-cdn',
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER => [
-            'Origin: https://mp3juice3.ninja',
-            'Referer: https://mp3juice3.ninja/',
-            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
-        ],
-        CURLOPT_TIMEOUT => 10,
-    ]);
-    $res = curl_exec($ch);
-    curl_close($ch);
-    
-    $cdnData = json_decode($res, true);
-    $cdn = $cdnData['cdn'] ?? 'cdn403.savetube.vip';
-    
-    // Info olish
-    $ch = curl_init();
-    curl_setopt_array($ch, [
-        CURLOPT_URL => "https://{$cdn}/v2/info",
+        CURLOPT_URL => 'https://ht.flvto.online/converter',
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode(['url' => $youtubeUrl]),
+        CURLOPT_POSTFIELDS => json_encode(['id' => $videoId, 'fileType' => 'MP3']),
         CURLOPT_HTTPHEADER => [
             'Content-Type: application/json',
-            'Origin: https://mp3juice3.ninja',
-            'Referer: https://mp3juice3.ninja/',
-            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
+            'Accept: application/json',
+            'Referer: https://www39.tubidy.buzz/',
+            'Origin: https://www39.tubidy.buzz',
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
         ],
-        CURLOPT_TIMEOUT => 20,
+        CURLOPT_TIMEOUT => 30,
     ]);
     $res = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     
-    $info = json_decode($res, true);
-    $key = $info['data'] ?? '';
+    lg("Convert response code: $code, data: " . substr($res, 0, 200));
     
-    if (!$key) return null;
+    if ($res) {
+        $data = json_decode($res, true);
+        if ($data && $data['status'] === 'ok' && !empty($data['link'])) {
+            lg("Got download link: " . substr($data['link'], 0, 80));
+            return $data['link'];
+        }
+        lg("Convert failed: " . ($data['msg'] ?? 'unknown'));
+    }
     
-    // Download URL olish
-    $ch = curl_init();
-    curl_setopt_array($ch, [
-        CURLOPT_URL => "https://{$cdn}/download",
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode(['downloadType' => 'audio', 'quality' => 128, 'key' => $key]),
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'Origin: https://mp3juice3.ninja',
-            'Referer: https://mp3juice3.ninja/',
-            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36'
-        ],
-        CURLOPT_TIMEOUT => 20,
-    ]);
-    $res = curl_exec($ch);
-    curl_close($ch);
-    
-    $download = json_decode($res, true);
-    return $download['data']['downloadUrl'] ?? null;
+    return null;
 }
 
 // Scraper
 $SOURCE_DOMAINS = [
-    ['base' => 'https://mp3juice3.ninja', 'type' => 'youtube'],
+    ['base' => 'https://test.flvto.online', 'type' => 'youtube', 'name' => 'Tubidy'],
     ['base' => 'https://eu.hitmo-top.com', 'download' => 'https://s2.deliciouspeaches.com'],
-    ['base' => 'https://hitmo.top', 'download' => 'https://dl.hitmo.top'],
 ];
 
 $USER_AGENTS = [
@@ -586,14 +557,14 @@ function scrapePage($query, $page = 1, $domain = null) {
                 list($artist, $title) = explode(' - ', $title, 2);
             }
             
-            $tracks[] = [
-                'title' => $title,
-                'artist' => $artist,
-                'url' => $ytUrl,
-                'img' => $thumb,
-                'download_url' => $ytUrl, // YouTube URL - keyin download qilamiz
-                'source' => 'youtube',
-            ];
+        $tracks[] = [
+            'title' => $title,
+            'artist' => $artist,
+            'url' => $item['id'], // Video ID
+            'img' => $item['thumbMedium'] ?? '',
+            'download_url' => $item['id'], // Video ID
+            'source' => 'youtube',
+        ];
         }
         
         lg("YouTube found " . count($tracks) . " tracks");
@@ -750,31 +721,38 @@ function buildTrackResult($track, $key, $query) {
 function uploadFile($track, $md5) {
     global $pdo;
     
-    $downloadUrl = $track['download_url'] ?? '';
+    $videoId = $track['download_url'] ?? '';
     $source = $track['source'] ?? '';
     
-    // YouTube dan download
-    if ($source === 'youtube' || strpos($downloadUrl, 'youtube.com') !== false || strpos($downloadUrl, 'youtu.be') !== false) {
-        lg("YouTube download: " . $downloadUrl);
-        $downloadUrl = getDownloadUrl($downloadUrl);
+    lg("Upload start: source=$source, videoId=" . substr($videoId, 0, 20));
+    
+    // YouTube dan download (flvto API)
+    if ($source === 'youtube' && !empty($videoId)) {
+        lg("Converting YouTube video: $videoId");
+        $downloadUrl = getDownloadUrl($videoId);
         
         if (!$downloadUrl) {
-            lg("YouTube download URL failed");
+            lg("Convert FAILED for: $videoId");
             return null;
         }
-        lg("Got download URL: " . substr($downloadUrl, 0, 50) . "...");
+        lg("Got MP3 URL: " . substr($downloadUrl, 0, 60));
+    } else {
+        $downloadUrl = $videoId;
     }
     
     $audioResult = downloadFile($downloadUrl);
     
     if (!$audioResult['ok']) {
-        lg("Download failed: " . $audioResult['error']);
+        lg("Download failed: " . ($audioResult['error'] ?? 'unknown'));
         return null;
     }
+    
+    lg("Downloaded " . strlen($audioResult['data']) . " bytes");
     
     $filename = preg_replace('/[\\/:"*?<>|]/', '', "{$track['artist']} - {$track['title']}.mp3");
     $tempFile = sys_get_temp_dir() . '/' . $filename;
     file_put_contents($tempFile, $audioResult['data']);
+    lg("Saved to temp: $filename");
     
     $sent = bot('sendAudio', [
         'chat_id' => DUMP_CHAT,
