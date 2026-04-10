@@ -1,508 +1,518 @@
 <?php
-require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/db.php';
-require_once __DIR__ . '/functions.php';
+ob_start();
+error_reporting(0);
+ini_set('display_errors', 0);
 
-logError('Bot loading...');
+// Logs
+$logDir = __DIR__ . '/logs';
+if (!is_dir($logDir)) {
+    mkdir($logDir, 0755, true);
+}
+$errorLog = $logDir . '/error.log';
+$infoLog = $logDir . '/info.log';
 
-$isWeb = php_sapi_name() !== 'cli';
-
-if ($isWeb) {
-    header('Content-Type: text/plain; charset=utf-8');
-    echo "Bot Status: Running\n";
-    echo "Time: " . date('Y-m-d H:i:s') . "\n";
-    echo "Error Log: /logs/error.log\n";
-    echo "\nLast 20 lines of error log:\n";
-    echo "========================\n";
-    
-    $logFile = __DIR__ . '/logs/error.log';
-    if (file_exists($logFile)) {
-        $lines = file($logFile);
-        $lastLines = array_slice($lines, -20);
-        echo implode('', $lastLines);
-    } else {
-        echo "No logs yet\n";
-    }
-    exit;
+function lg($msg, $data = null) {
+    global $errorLog;
+    $line = '[' . date('Y-m-d H:i:s') . '] ' . $msg . ($data ? ' | ' . json_encode($data, JSON_UNESCAPED_UNICODE) : '') . "\n";
+    file_put_contents($errorLog, $line, FILE_APPEND);
 }
 
-class MusicBot {
-    private int $updateId = 0;
-    private float $lastBackup = 0;
-    private int $backupInterval = 3600;
-    
-    public function __construct() {
-        logError('MusicBot constructing...');
-        Database::connect();
-        echo "🤖 Bot started\n";
-        logError('Bot constructed successfully');
+lg('=== BOT STARTED ===');
+
+set_error_handler(function($e, $str, $file, $line) {
+    lg("PHP ERROR [$e]: $str", ['file' => $file, 'line' => $line]);
+});
+set_exception_handler(function($e) {
+    lg('EXCEPTION', ['msg' => $e->getMessage(), 'file' => $e->getFile(), 'line' => $e->getLine()]);
+});
+
+// Load .env
+if (file_exists(__DIR__ . '/.env')) {
+    $lines = file(__DIR__ . '/.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $l) {
+        if (strpos(trim($l), '#') === 0) continue;
+        if (strpos($l, '=') !== false) {
+            list($k, $v) = explode('=', $l, 2);
+            $k = trim($k);
+            $v = trim($v);
+            if (!getenv($k)) putenv("$k=$v");
+        }
+    }
+}
+
+define('API_KEY', getenv('BOT_TOKEN') ?: '');
+define('ADMIN', getenv('ADMIN_ID') ?: '');
+define('BOT_USER', getenv('BOT_USERNAME') ?: 'Ritmchibot');
+define('DUMP_CHAT', getenv('BOT_DUMP_CHAT') ?: '');
+define('DB_HOST', getenv('DB_HOST') ?: '');
+define('DB_USER', getenv('DB_USER') ?: '');
+define('DB_PASS', getenv('DB_PASS') ?: '');
+define('DB_NAME', getenv('DB_NAME') ?: '');
+define('PAGE_SIZE', 10);
+define('ITEMS_PER_PAGE', 48);
+
+lg('Config loaded', [
+    'API_KEY_SET' => !empty(API_KEY),
+    'DB_HOST' => DB_HOST,
+    'DB_USER' => DB_USER
+]);
+
+// Bot function
+function bot($method, $datas = []) {
+    $url = 'https://api.telegram.org/bot' . API_KEY . '/' . $method;
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => !empty($datas),
+        CURLOPT_POSTFIELDS => $datas,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => false,
+    ]);
+    $res = curl_exec($ch);
+    $err = curl_error($ch);
+    curl_close($ch);
+    if ($err) {
+        lg('CURL ERROR', ['method' => $method, 'error' => $err]);
+        return null;
+    }
+    return json_decode($res, true);
+}
+
+function botJson($method, $datas = []) {
+    $url = 'https://api.telegram.org/bot' . API_KEY . '/' . $method;
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($datas),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => false,
+    ]);
+    $res = curl_exec($ch);
+    $err = curl_error($ch);
+    curl_close($ch);
+    if ($err) {
+        lg('CURL ERROR', ['method' => $method, 'error' => $err]);
+        return null;
+    }
+    return json_decode($res, true);
+}
+
+// Get input
+$update = json_decode(file_get_contents('php://input'), true);
+
+// Variables
+$message = $update['message'] ?? [];
+$callback_query = $update['callback_query'] ?? [];
+$inline_query = $update['inline_query'] ?? [];
+
+$chat_id = $message['chat']['id'] ?? 0;
+$cid = $chat_id;
+$mid = $message['message_id'] ?? 0;
+$text = $message['text'] ?? '';
+$tx = $text;
+$cty = $message['chat']['type'] ?? 'private';
+$type = $cty;
+$uid = $message['from']['id'] ?? $callback_query['from']['id'] ?? $inline_query['from']['id'] ?? 0;
+$ismi = $message['from']['first_name'] ?? $callback_query['from']['first_name'] ?? '';
+$ismi2 = $message['from']['last_name'] ?? $callback_query['from']['last_name'] ?? '';
+$username = $message['from']['username'] ?? $callback_query['from']['username'] ?? '';
+$name = "<a href='tg://user?id=$uid'>$ismi $ismi2</a>";
+
+// Callback variables
+$cb_data = $callback_query['data'] ?? '';
+$cb_id = $callback_query['id'] ?? '';
+$cb_uid = $callback_query['from']['id'] ?? 0;
+$cb_cid = $callback_query['message']['chat']['id'] ?? 0;
+$cb_mid = $callback_query['message']['message_id'] ?? 0;
+$inline_msg_id = $callback_query['inline_message_id'] ?? '';
+
+// Inline variables
+$inline_id = $inline_query['id'] ?? '';
+$inline_query_text = trim($inline_query['query'] ?? '');
+$inline_offset = (int)($inline_query['offset'] ?: 1);
+
+// Database
+$pdo = null;
+try {
+    $pdo = new PDO(
+        'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4',
+        DB_USER,
+        DB_PASS,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+    lg('DB Connected');
+} catch (PDOException $e) {
+    lg('DB Connection FAILED', ['error' => $e->getMessage()]);
+}
+
+// Caches
+$trackCache = [];
+$fileIdCache = [];
+
+// Helpers
+function md5hash($url) {
+    return md5($url);
+}
+
+function cacheTrack($track, $key) {
+    global $trackCache;
+    $trackCache[$key] = $track;
+}
+
+function getCachedTrack($key) {
+    global $trackCache;
+    return $trackCache[$key] ?? null;
+}
+
+function cacheFileId($md5, $fileId) {
+    global $fileIdCache;
+    $fileIdCache[$md5] = $fileId;
+}
+
+function hasFileId($md5) {
+    global $fileIdCache;
+    return isset($fileIdCache[$md5]);
+}
+
+function getFileId($md5) {
+    global $fileIdCache;
+    return $fileIdCache[$md5] ?? null;
+}
+
+// DB functions
+function upsertUser($pdo, $from) {
+    $stmt = $pdo->prepare("
+        INSERT INTO `users` (telegram_id, first_name, username, last_seen)
+        VALUES (?, ?, ?, NOW())
+        ON DUPLICATE KEY UPDATE
+            first_name = VALUES(first_name),
+            username = VALUES(username),
+            last_seen = NOW()
+    ");
+    $stmt->execute([
+        $from['id'] ?? 0,
+        $from['first_name'] ?? null,
+        $from['username'] ?? null
+    ]);
+}
+
+function logSearch($pdo, $userId, $query, $count, $source = 'direct') {
+    $pdo->prepare("UPDATE `users` SET total_searches = total_searches + 1 WHERE telegram_id = ?")->execute([$userId]);
+    $pdo->prepare("INSERT INTO `search_logs` (user_id, query, results_count, source) VALUES (?, ?, ?, ?)")->execute([$userId, $query, $count, $source]);
+}
+
+function logDownload($pdo, $userId, $md5) {
+    $pdo->prepare("UPDATE `users` SET total_downloads = total_downloads + 1 WHERE telegram_id = ?")->execute([$userId]);
+    $pdo->prepare("UPDATE `tracks` SET downloads = downloads + 1 WHERE md5 = ?")->execute([$md5]);
+}
+
+function getFileIdFromDB($pdo, $md5) {
+    $stmt = $pdo->prepare("
+        SELECT file_id FROM `tracks`
+        WHERE md5 = ? AND file_id IS NOT NULL AND id3_tagged = 1
+        AND file_id_saved_at > DATE_SUB(NOW(), INTERVAL 30 DAY)
+        LIMIT 1
+    ");
+    $stmt->execute([$md5]);
+    $row = $stmt->fetch();
+    return $row ? $row['file_id'] : null;
+}
+
+function saveTrack($pdo, $data) {
+    $stmt = $pdo->prepare("
+        INSERT INTO `tracks` (md5, title, artist, source_url, download_url, img, file_id, file_id_saved_at, id3_tagged)
+        VALUES (:md5, :title, :artist, :source_url, :download_url, :img, :file_id, :file_id_saved_at, :id3_tagged)
+        ON DUPLICATE KEY UPDATE
+            file_id = COALESCE(VALUES(file_id), file_id),
+            file_id_saved_at = COALESCE(VALUES(file_id_saved_at), file_id_saved_at)
+    ");
+    $stmt->execute([
+        'md5' => $data['md5'],
+        'title' => $data['title'],
+        'artist' => $data['artist'],
+        'source_url' => $data['source_url'] ?? null,
+        'download_url' => $data['download_url'] ?? null,
+        'img' => $data['img'] ?? null,
+        'file_id' => $data['file_id'] ?? null,
+        'file_id_saved_at' => $data['file_id_saved_at'] ?? null,
+        'id3_tagged' => $data['id3_tagged'] ?? 0,
+    ]);
+}
+
+// Scraper
+$SOURCE_DOMAINS = [
+    ['base' => 'https://eu.hitmo-top.com', 'download' => 'https://s2.deliciouspeaches.com'],
+    ['base' => 'https://hitmo.top', 'download' => 'https://dl.hitmo.top'],
+    ['base' => 'https://hitmo.me', 'download' => 'https://dl.hitmo.me'],
+];
+
+$USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+];
+
+function getUA() {
+    global $USER_AGENTS;
+    return $USER_AGENTS[array_rand($USER_AGENTS)];
+}
+
+function httpRequest($url, $retries = 2) {
+    $baseDelay = 1000;
+    for ($i = 0; $i <= $retries; $i++) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_HTTPHEADER => [
+                'User-Agent: ' . getUA(),
+                'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language: en-US,en;q=0.9',
+            ],
+        ]);
+        $data = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
+        
+        if ($data && $code === 200) {
+            return ['ok' => true, 'data' => $data];
+        }
+        
+        if ($i < $retries && ($code >= 500 || $code === 403 || $code === 429 || $err)) {
+            $delay = ($baseDelay * pow(2, $i) + rand(0, 500)) / 1000;
+            lg("Retry $i for $url after {$delay}s", ['code' => $code]);
+            usleep((int)($delay * 1000000));
+        }
     }
     
-    public function run(): void {
-        logError('Bot run loop started');
+    return ['ok' => false, 'error' => $err ?? "HTTP $code"];
+}
+
+function downloadFile($url, $retries = 2) {
+    for ($i = 0; $i <= $retries; $i++) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_HTTPHEADER => [
+                'User-Agent: ' . getUA(),
+                'Referer: https://hitmo.top/',
+            ],
+        ]);
+        $data = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
         
-        while (true) {
-            try {
-                $updates = $this->getUpdates();
-                
-                if (!empty($updates)) {
-                    foreach ($updates as $update) {
-                        $this->processUpdate($update);
-                        $this->updateId = $update['update_id'] + 1;
-                    }
+        if ($data && $code === 200) {
+            return ['ok' => true, 'data' => $data];
+        }
+        
+        if ($i < $retries) {
+            usleep((int)(500000 * pow(2, $i)));
+        }
+    }
+    
+    return ['ok' => false, 'error' => $err ?? 'Download failed'];
+}
+
+function scrapePage($query, $page = 1, $domain = null) {
+    global $SOURCE_DOMAINS;
+    
+    if (!$domain) {
+        $domain = $SOURCE_DOMAINS[0];
+    }
+    
+    $base = $domain['base'];
+    $download = $domain['download'];
+    $start = ($page - 1) * ITEMS_PER_PAGE;
+    $q = urlencode($query);
+    $url = $start === 0 ? "$base/search?q=$q" : "$base/search/start/$start?q=$q";
+    
+    lg("Scraping $base for: $query page $page");
+    
+    $result = httpRequest($url);
+    
+    if (!$result['ok']) {
+        lg("Scrape failed: $base", ['error' => $result['error']]);
+        
+        foreach ($SOURCE_DOMAINS as $fallback) {
+            if ($fallback['base'] !== $domain['base']) {
+                lg("Trying fallback: " . $fallback['base']);
+                try {
+                    return scrapePage($query, $page, $fallback);
+                } catch (Exception $e) {
+                    continue;
                 }
-                
-                $this->checkBackup();
-                
-                sleep(1);
-            } catch (Exception $e) {
-                logError('Run loop error', [
-                    'message' => $e->getMessage(),
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine()
-                ]);
-                echo "ERROR: " . $e->getMessage() . "\n";
-                sleep(5);
-            }
-        }
-    }
-    
-    private function getUpdates(): array {
-        $result = Helpers::apiRequest('getUpdates', [
-            'offset' => $this->updateId,
-            'timeout' => 30,
-            'limit' => 100,
-        ]);
-        
-        if (!($result['ok'] ?? false)) {
-            return [];
-        }
-        
-        return $result['result'] ?? [];
-    }
-    
-    private function processUpdate(array $update): void {
-        if (isset($update['message'])) {
-            $this->handleMessage($update['message']);
-        } elseif (isset($update['callback_query'])) {
-            $this->handleCallback($update['callback_query']);
-        } elseif (isset($update['inline_query'])) {
-            $this->handleInline($update['inline_query']);
-        }
-    }
-    
-    private function handleMessage(array $msg): void {
-        $chatId = $msg['chat']['id'];
-        $from = $msg['from'];
-        $text = $msg['text'] ?? '';
-        
-        Database::upsertUser($from);
-        
-        if (str_starts_with($text, '/start')) {
-            $this->sendStart($chatId, $from['first_name'] ?? 'Friend');
-        } elseif (str_starts_with($text, '/stats')) {
-            $this->sendStats($chatId, $from['id']);
-        } elseif (str_starts_with($text, '/help')) {
-            $this->sendHelp($chatId);
-        } elseif (!str_starts_with($text, '/') && !($msg['via_bot'] ?? false)) {
-            $this->handleSearch($chatId, $from, $text);
-        }
-    }
-    
-    private function handleCallback(array $query): void {
-        $data = $query['data'] ?? '';
-        $chatId = $query['message']['chat']['id'] ?? null;
-        $msgId = $query['message']['message_id'] ?? null;
-        $inlineMsgId = $query['inline_message_id'] ?? null;
-        $from = $query['from'];
-        
-        Database::upsertUser($from);
-        
-        Helpers::apiRequest('answerCallbackQuery', [
-            'callback_query_id' => $query['id'],
-            'text' => '⏳ Yuklanmoqda...',
-        ]);
-        
-        if (str_starts_with($data, 'dl:')) {
-            $md5 = substr($data, 3);
-            $this->handleDownload($from, $chatId, $msgId, $inlineMsgId, $md5);
-        } elseif (str_starts_with($data, 'more:')) {
-            $parts = explode(':', $data, 3);
-            $query2 = $parts[1] ?? '';
-            $page = (int)($parts[2] ?? 1);
-            $this->handleMore($from, $chatId, $msgId, $query2, $page);
-        } elseif ($data === 'close') {
-            if ($msgId) {
-                Helpers::apiRequest('deleteMessage', ['chat_id' => $chatId, 'message_id' => $msgId]);
-            }
-        }
-    }
-    
-    private function handleInline(array $query): void {
-        $queryId = $query['id'];
-        $queryText = trim($query['query']);
-        $offset = (int)($query['offset'] ?: 1);
-        $fromId = $query['from']['id'] ?? 0;
-        
-        Database::upsertUser($query['from']);
-        
-        if (empty($queryText)) {
-            $ad = Database::getActiveAd('inline');
-            $results = [$this->buildAdResult($ad)];
-            Helpers::apiRequest('answerInlineQuery', [
-                'inline_query_id' => $queryId,
-                'results' => json_encode($results),
-                'cache_time' => 0,
-            ]);
-            return;
-        }
-        
-        try {
-            $result = Scraper::scrapePage($queryText, $offset);
-            $tracks = $result['tracks'];
-            
-            Database::logSearch($fromId, $queryText, count($tracks), 'inline');
-            
-            if (empty($tracks)) {
-                Helpers::apiRequest('answerInlineQuery', [
-                    'inline_query_id' => $queryId,
-                    'results' => json_encode([]),
-                    'cache_time' => 5,
-                ]);
-                return;
-            }
-            
-            $seen = [];
-            $uniqueTracks = [];
-            foreach ($tracks as $track) {
-                $key = Helpers::cacheTrack($track);
-                if (!in_array($key, $seen)) {
-                    $seen[] = $key;
-                    $uniqueTracks[] = $track;
-                }
-            }
-            
-            $trackResults = array_map(fn($t) => $this->buildTrackResult($t, $queryText), $uniqueTracks);
-            
-            $ad = Database::getActiveAd('inline');
-            $adResult = $this->buildAdResult($ad);
-            
-            if ($offset === 1) {
-                array_unshift($trackResults, $adResult);
-            }
-            
-            $nextOffset = $offset < $result['pagination']['totalPages'] ? (string)($offset + 1) : '';
-            
-            Helpers::apiRequest('answerInlineQuery', [
-                'inline_query_id' => $queryId,
-                'results' => json_encode(array_values($trackResults)),
-                'next_offset' => $nextOffset,
-                'cache_time' => 300,
-                'is_personal' => false,
-            ]);
-            
-        } catch (Exception $e) {
-            echo "[INLINE] ❌ {$e->getMessage()}\n";
-            Helpers::apiRequest('answerInlineQuery', [
-                'inline_query_id' => $queryId,
-                'results' => json_encode([]),
-                'cache_time' => 5,
-            ]);
-        }
-    }
-    
-    private function sendStart(int $chatId, string $name): void {
-        $text = "👋 Salom, <b>{$name}</b>!\n\n";
-        $text .= "🎵 Men musiqa qidiruv botiman.\n\n";
-        $text .= "<b>Foydalanish:</b>\n";
-        $text .= "• Qo'shiq nomini yozing\n";
-        $text .= "• Istalgan chatda: <code>@" . BOT_USERNAME . " Billie Jean</code>";
-        
-        Helpers::apiRequestJson('sendMessage', [
-            'chat_id' => $chatId,
-            'text' => $text,
-            'parse_mode' => 'HTML',
-            'reply_markup' => json_encode([
-                'inline_keyboard' => [
-                    [['text' => '🔍 Bu chatda qidirish', 'switch_inline_query_current_chat' => '']],
-                    [['text' => '🌐 Boshqa chatda', 'switch_inline_query' => '']],
-                    [['text' => "Kanalga o'tish", 'url' => 'https://t.me/RitmchiUz']],
-                ],
-            ]),
-        ]);
-    }
-    
-    private function sendStats(int $chatId, int $userId): void {
-        $pdo = Database::connect();
-        $stmt = $pdo->prepare("SELECT total_searches, total_downloads FROM `users` WHERE telegram_id = ?");
-        $stmt->execute([$userId]);
-        $user = $stmt->fetch();
-        
-        $stmt2 = $pdo->prepare("SELECT query, created_at FROM `search_logs` WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
-        $stmt2->execute([$userId]);
-        $recent = $stmt2->fetchAll();
-        
-        $text = "📊 <b>Sizning statistikangiz:</b>\n\n";
-        $text .= "🔍 Jami qidiruvlar: <b>" . ($user['total_searches'] ?? 0) . "</b>\n";
-        $text .= "⬇️ Jami yuklab olishlar: <b>" . ($user['total_downloads'] ?? 0) . "</b>\n\n";
-        $text .= "🕐 <b>So'nggi qidiruvlar:</b>\n";
-        
-        if (empty($recent)) {
-            $text .= "—";
-        } else {
-            foreach ($recent as $r) {
-                $text .= "• <code>{$r['query']}</code>\n";
             }
         }
         
-        Helpers::apiRequestJson('sendMessage', [
-            'chat_id' => $chatId,
-            'text' => $text,
-            'parse_mode' => 'HTML',
-        ]);
+        throw new Exception("Scraping failed: " . ($result['error'] ?? 'Unknown'));
     }
     
-    private function sendHelp(int $chatId): void {
-        $text = "📖 <b>Yordam:</b>\n\n";
-        $text .= "1. Qo'shiq nomi yozing - natijalar chiqadi\n";
-        $text .= "2. Nomerini bosing - yuklab olish boshlanadi\n";
-        $text .= "3. Inline: <code>@" . BOT_USERNAME . " qo'shiq nomi</code>\n\n";
-        $text .= "📌 <b>Buyruqlar:</b>\n";
-        $text .= "/stats - Statistika\n";
-        $text .= "/help - Yordam";
-        
-        Helpers::apiRequestJson('sendMessage', [
-            'chat_id' => $chatId,
-            'text' => $text,
-            'parse_mode' => 'HTML',
-        ]);
-    }
+    $html = $result['data'];
+    $tracks = [];
     
-    private function handleSearch(int $chatId, array $from, string $query): void {
-        $msg = Helpers::apiRequestJson('sendMessage', [
-            'chat_id' => $chatId,
-            'text' => "🔍 <b>{$query}</b> qidirilmoqda...",
-            'parse_mode' => 'HTML',
-        ]);
-        
-        $loadingMsgId = $msg['result']['message_id'] ?? null;
-        
-        try {
-            $result = Scraper::scrapePage($query, 1);
-            $tracks = $result['tracks'];
-            
-            Database::logSearch($from['id'], $query, count($tracks), 'direct');
-            
-            if ($loadingMsgId) {
-                Helpers::apiRequest('deleteMessage', ['chat_id' => $chatId, 'message_id' => $loadingMsgId]);
-            }
-            
-            if (empty($tracks)) {
-                Helpers::apiRequestJson('sendMessage', [
-                    'chat_id' => $chatId,
-                    'text' => "❌ <b>{$query}</b> bo'yicha hech narsa topilmadi.\nBoshqa kalit so'z bilan urinib ko'ring.",
-                    'parse_mode' => 'HTML',
-                ]);
-                return;
-            }
-            
-            $shown = array_slice($tracks, 0, PAGE_SIZE);
-            
-            foreach ($shown as $i => $track) {
-                $key = Helpers::cacheTrack($track);
-                $ready = Helpers::hasFileId($key);
-                $badge = $ready ? '✅ ' : '';
-                $shown[$i]['_key'] = $key;
-            }
-            
-            $text = $this->buildSearchMessage($shown, $query, 1, $result['pagination']['totalPages']);
-            $keyboard = $this->buildTrackKeyboard($shown, $query, 1, $result['pagination']['totalPages']);
-            
-            Helpers::apiRequestJson('sendMessage', [
-                'chat_id' => $chatId,
-                'text' => $text,
-                'parse_mode' => 'HTML',
-                'reply_markup' => json_encode(['inline_keyboard' => $keyboard]),
-            ]);
-            
-        } catch (Exception $e) {
-            echo "[SEARCH] ❌ {$e->getMessage()}\n";
-            if ($loadingMsgId) {
-                Helpers::apiRequestJson('editMessageText', [
-                    'chat_id' => $chatId,
-                    'message_id' => $loadingMsgId,
-                    'text' => "❌ Qidiruvda xato yuz berdi. Qayta urinib ko'ring.",
-                    'parse_mode' => 'HTML',
-                ]);
-            }
-        }
-    }
+    preg_match_all('/data-musmeta=\'([^\']+)\'/', $html, $matches);
     
-    private function handleDownload(array $from, ?int $chatId, ?int $msgId, ?string $inlineMsgId, string $md5): void {
-        $track = Helpers::getCachedTrack($md5);
+    foreach ($matches[1] as $jsonStr) {
+        $meta = json_decode(html_entity_decode($jsonStr), true);
+        if (!$meta || empty($meta['title'])) continue;
         
-        if (!$track) {
-            $dbTrack = Database::getTrack($md5);
-            if ($dbTrack) {
-                $track = [
-                    'title' => $dbTrack['title'],
-                    'artist' => $dbTrack['artist'],
-                    'url' => $dbTrack['source_url'],
-                    'download_url' => $dbTrack['download_url'],
-                    'img' => $dbTrack['img'],
-                ];
-                Helpers::cacheTrack($track);
-            }
-        }
+        $downloadUrl = str_replace(
+            ['eu.hitmotop.com', 's2.deliciouspeaches.com', 'dl.hitmo.top', 'dl.hitmo.me'],
+            [$download, $download, $download, $download],
+            $meta['url'] ?? ''
+        );
         
-        if (!$track) {
-            Helpers::apiRequest('answerCallbackQuery', [
-                'callback_query_id' => '', 
-                'text' => "⚠️ Qo'shiq topilmadi",
-                'show_alert' => true,
-            ]);
-            return;
-        }
-        
-        Database::logDownload($from['id'], $md5);
-        
-        if ($inlineMsgId) {
-            $this->handleInlineDownload($inlineMsgId, $track, $md5);
-        } elseif ($chatId && $msgId) {
-            $this->handleDirectDownload($chatId, $msgId, $track, $md5);
-        }
-    }
-    
-    private function handleInlineDownload(string $msgId, array $track, string $md5): void {
-        $fileId = $this->getOrUploadFileId($track, $md5);
-        
-        if (!$fileId) {
-            return;
-        }
-        
-        Helpers::apiRequest('editMessageMedia', [
-            'inline_message_id' => $msgId,
-            'media' => json_encode([
-                'type' => 'audio',
-                'media' => $fileId,
-                'title' => $track['title'],
-                'performer' => $track['artist'],
-                'caption' => "🎵 <b>{$track['artist']}</b> — <b>{$track['title']}</b>",
-                'parse_mode' => 'HTML',
-            ]),
-            'reply_markup' => json_encode([
-                'inline_keyboard' => [
-                    [['text' => '🎵 Bot orqali qidirish', 'url' => "https://t.me/" . BOT_USERNAME]],
-                ],
-            ]),
-        ]);
-    }
-    
-    private function handleDirectDownload(int $chatId, int $msgId, array $track, string $md5): void {
-        $progressFrames = [
-            '⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜  0%',
-            '🟩⬜⬜⬜⬜⬜⬜⬜⬜⬜ 10%',
-            '🟩🟩⬜⬜⬜⬜⬜⬜⬜⬜ 20%',
-            '🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜ 30%',
-            '🟩🟩🟩🟩⬜⬜⬜⬜⬜⬜ 40%',
-            '🟩🟩🟩🟩🟩⬜⬜⬜⬜⬜ 50%',
-            '🟩🟩🟩🟩🟩🟩⬜⬜⬜⬜ 60%',
-            '🟩🟩🟩🟩🟩🟩🟩⬜⬜⬜ 70%',
-            '🟩🟩🟩🟩🟩🟩🟩🟩⬜⬜ 80%',
-            '🟩🟩🟩🟩🟩🟩🟩🟩🟩⬜ 90%',
-            '🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩 100%',
+        $tracks[] = [
+            'title' => $meta['title'],
+            'artist' => $meta['artist'],
+            'url' => $meta['url'],
+            'img' => $meta['img'] ?? null,
+            'download_url' => $downloadUrl,
         ];
-        
-        $label = "🎵 <b>{$track['artist']} — {$track['title']}</b>";
-        Helpers::apiRequestJson('editMessageText', [
-            'chat_id' => $chatId,
-            'message_id' => $msgId,
-            'text' => "{$label}\n{$progressFrames[0]}",
-            'parse_mode' => 'HTML',
-        ]);
-        
-        $fileId = $this->getOrUploadFileId($track, $md5);
-        
-        if (!$fileId) {
-            Helpers::apiRequestJson('editMessageText', [
-                'chat_id' => $chatId,
-                'message_id' => $msgId,
-                'text' => "❌ Yuklashda xato yuz berdi. Qayta urinib ko'ring.",
-                'parse_mode' => 'HTML',
-            ]);
-            return;
-        }
-        
-        Helpers::apiRequestJson('editMessageText', [
-            'chat_id' => $chatId,
-            'message_id' => $msgId,
-            'text' => "{$label}\n{$progressFrames[10]}",
-            'parse_mode' => 'HTML',
-        ]);
-        
-        Helpers::apiRequestJson('sendAudio', [
-            'chat_id' => $chatId,
-            'audio' => $fileId,
+    }
+    
+    $pagination = ['currentPage' => 1, 'totalPages' => 1];
+    if (preg_match('/pagination__item active[^>]*>.*?<b>([\d]+)<\/b>/s', $html, $m)) {
+        $pagination['currentPage'] = (int)$m[1];
+    }
+    
+    lg("Found " . count($tracks) . " tracks from $base");
+    
+    return ['tracks' => $tracks, 'pagination' => $pagination, 'domain' => $domain];
+}
+
+// Keyboard builders
+function buildKeyboard($tracks, $query, $page, $totalPages) {
+    $rows = [];
+    
+    $row1 = [];
+    for ($i = 0; $i < 5 && $i < count($tracks); $i++) {
+        $key = $tracks[$i]['key'];
+        $ready = hasFileId($key) ? '✅' : '';
+        $row1[] = ['text' => $ready . ($i + 1), 'callback_data' => "dl:$key"];
+    }
+    if ($row1) $rows[] = $row1;
+    
+    $row2 = [];
+    for ($i = 5; $i < 10 && $i < count($tracks); $i++) {
+        $key = $tracks[$i]['key'];
+        $ready = hasFileId($key) ? '✅' : '';
+        $row2[] = ['text' => $ready . ($i + 1), 'callback_data' => "dl:$key"];
+    }
+    if ($row2) $rows[] = $row2;
+    
+    $navRow = [];
+    if ($page > 1) {
+        $navRow[] = ['text' => '◀️', 'callback_data' => "more:" . urlencode($query) . ":" . ($page - 1)];
+    } else {
+        $navRow[] = ['text' => '◀️', 'callback_data' => 'noop'];
+    }
+    $navRow[] = ['text' => '✖️', 'callback_data' => 'close'];
+    if ($page < $totalPages) {
+        $navRow[] = ['text' => '▶️', 'callback_data' => "more:" . urlencode($query) . ":" . ($page + 1)];
+    } else {
+        $navRow[] = ['text' => '▶️', 'callback_data' => 'noop'];
+    }
+    $rows[] = $navRow;
+    
+    $rows[] = [['text' => '🔍 Yangi qidiruv', 'switch_inline_query_current_chat' => '']];
+    $rows[] = [['text' => "🌐 Do'stga ulash", 'switch_inline_query' => $query]];
+    
+    return $rows;
+}
+
+function buildSearchMessage($tracks, $query, $page, $totalPages) {
+    $list = '';
+    foreach ($tracks as $i => $t) {
+        $ready = hasFileId($t['key']) ? '✅ ' : '';
+        $list .= ($i + 1) . ". {$ready}{$t['artist']} — {$t['title']}\n";
+    }
+    
+    $pageInfo = $totalPages > 1 ? "📄 <b>{$page}/{$totalPages}</b> sahifa\n\n" : "\n";
+    return "🎶 <b>{$query}</b> — natijalar\n{$pageInfo}{$list}";
+}
+
+function buildTrackResult($track, $key, $query) {
+    $cachedFileId = getFileId($key);
+    
+    if ($cachedFileId) {
+        return [
+            'type' => 'audio',
+            'id' => $key,
+            'audio_file_id' => $cachedFileId,
             'title' => $track['title'],
             'performer' => $track['artist'],
             'caption' => "🎵 <b>{$track['artist']}</b> — <b>{$track['title']}</b>",
             'parse_mode' => 'HTML',
-            'reply_markup' => json_encode([
-                'inline_keyboard' => [
-                    [['text' => '🔍 Yana qidirish', 'switch_inline_query_current_chat' => '']],
-                    [['text' => "Kanalga o'tish", 'url' => 'https://t.me/RitmchiUz']],
-                ],
-            ]),
-        ]);
-        
-        Helpers::apiRequest('deleteMessage', ['chat_id' => $chatId, 'message_id' => $msgId]);
+        ];
     }
     
-    private function getOrUploadFileId(array $track, string $md5): ?string {
-        if (Helpers::hasFileId($md5)) {
-            return Helpers::getFileId($md5);
-        }
-        
-        $dbFileId = Database::getFileIdFromDB($md5);
-        if ($dbFileId) {
-            Helpers::cacheFileId($md5, $dbFileId);
-            return $dbFileId;
-        }
-        
-        $audioResult = Helpers::downloadFile($track['download_url']);
-        if (!$audioResult['success']) {
-            echo "[UPLOAD] ❌ Audio download failed: {$audioResult['error']}\n";
-            return null;
-        }
-        
-        $audioData = $audioResult['data'];
-        
-        $filename = preg_replace('/[\\/:"*?<>|]/', '', "{$track['artist']} - {$track['title']}.mp3");
-        
-        $result = Helpers::apiRequestJson('sendAudio', [
-            'chat_id' => BOT_DUMP_CHAT,
-            'audio' => 'https://' . $_SERVER['HTTP_HOST'] . '/upload.php?file=' . urlencode($filename),
-            'title' => $track['title'],
-            'performer' => $track['artist'],
-            'reply_markup' => json_encode([
-                'inline_keyboard' => [
-                    [['text' => "🎵 Siz ham sinab ko'ring", 'url' => "https://t.me/" . BOT_USERNAME]],
-                ],
-            ]),
-        ]);
-        
-        if (!($result['ok'] ?? false)) {
-            $result = Helpers::apiRequest('sendDocument', [
-                'chat_id' => BOT_DUMP_CHAT,
-                'document' => 'https://' . $_SERVER['HTTP_HOST'] . '/upload.php?file=' . urlencode($filename),
-            ]);
-        }
-        
-        $fileId = $result['result']['audio']['file_id'] ?? $result['result']['document']['file_id'] ?? null;
-        
-        if ($fileId) {
-            Helpers::cacheFileId($md5, $fileId);
-            Database::saveTrack([
+    return [
+        'type' => 'article',
+        'id' => $key,
+        'title' => "🎵 {$track['title']}",
+        'description' => "👤 {$track['artist']} · ⏳ Yuklanadi",
+        'thumb_url' => $track['img'] ?? null,
+        'input_message_content' => [
+            'message_text' => "🎵 <b>{$track['artist']}</b> — <b>{$track['title']}</b>",
+            'parse_mode' => 'HTML',
+        ],
+        'reply_markup' => [
+            'inline_keyboard' => [
+                [['text' => '⬇️ Yuklab olish', 'callback_data' => "dl:$key"]],
+                [['text' => '🔍 Bu chatda', 'switch_inline_query_current_chat' => '']],
+            ],
+        ],
+    ];
+}
+
+// Upload file
+function uploadFile($track, $md5) {
+    global $pdo;
+    $audioResult = downloadFile($track['download_url']);
+    
+    if (!$audioResult['ok']) {
+        lg("Download failed: " . $audioResult['error']);
+        return null;
+    }
+    
+    $filename = preg_replace('/[\\/:"*?<>|]/', '', "{$track['artist']} - {$track['title']}.mp3");
+    $tempFile = sys_get_temp_dir() . '/' . $filename;
+    file_put_contents($tempFile, $audioResult['data']);
+    
+    $sent = bot('sendAudio', [
+        'chat_id' => DUMP_CHAT,
+        'audio' => new CURLFile($tempFile),
+        'title' => $track['title'],
+        'performer' => $track['artist'],
+    ]);
+    
+    @unlink($tempFile);
+    
+    if (!$sent || !($sent['ok'] ?? false)) {
+        lg("Upload failed", ['result' => $sent ?? 'null']);
+        return null;
+    }
+    
+    $fileId = $sent['result']['audio']['file_id'] ?? null;
+    
+    if ($fileId) {
+        cacheFileId($md5, $fileId);
+        if ($pdo) {
+            saveTrack($pdo, [
                 'md5' => $md5,
                 'title' => $track['title'],
                 'artist' => $track['artist'],
@@ -514,260 +524,355 @@ class MusicBot {
                 'id3_tagged' => 1,
             ]);
         }
-        
-        return $fileId;
     }
     
-    private function handleMore(array $from, ?int $chatId, ?int $msgId, string $query, int $page): void {
-        if (!$msgId) return;
+    return $fileId;
+}
+
+function getOrUploadFileId($track, $md5) {
+    global $pdo;
+    if (hasFileId($md5)) {
+        return getFileId($md5);
+    }
+    
+    if ($pdo) {
+        $dbFileId = getFileIdFromDB($pdo, $md5);
+        if ($dbFileId) {
+            cacheFileId($md5, $dbFileId);
+            return $dbFileId;
+        }
+    }
+    
+    return uploadFile($track, $md5);
+}
+
+// Progress frames
+$PROGRESS = [
+    '⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜  0%',
+    '🟩⬜⬜⬜⬜⬜⬜⬜⬜⬜ 10%',
+    '🟩🟩⬜⬜⬜⬜⬜⬜⬜⬜ 20%',
+    '🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜ 30%',
+    '🟩🟩🟩🟩⬜⬜⬜⬜⬜⬜ 40%',
+    '🟩🟩🟩🟩🟩⬜⬜⬜⬜⬜ 50%',
+    '🟩🟩🟩🟩🟩🟩⬜⬜⬜⬜ 60%',
+    '🟩🟩🟩🟩🟩🟩🟩⬜⬜⬜ 70%',
+    '🟩🟩🟩🟩🟩🟩🟩🟩⬜⬜ 80%',
+    '🟩🟩🟩🟩🟩🟩🟩🟩🟩⬜ 90%',
+    '🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩 100%',
+];
+
+// =====================
+// HANDLERS
+// =====================
+
+// Callback Query Handler
+if ($cb_id) {
+    lg("Callback: $cb_data from $cb_uid");
+    
+    if ($pdo) upsertUser($pdo, $callback_query['from']);
+    
+    bot('answerCallbackQuery', [
+        'callback_query_id' => $cb_id,
+        'text' => '⏳ Yuklanmoqda...',
+    ]);
+    
+    if (strpos($cb_data, 'dl:') === 0) {
+        $md5 = substr($cb_data, 3);
+        $track = getCachedTrack($md5);
         
-        try {
-            $result = Scraper::scrapePage($query, $page);
-            $tracks = $result['tracks'];
+        if (!$track && $pdo) {
+            $stmt = $pdo->prepare("SELECT * FROM `tracks` WHERE md5 = ?");
+            $stmt->execute([$md5]);
+            $row = $stmt->fetch();
+            if ($row) {
+                $track = [
+                    'title' => $row['title'],
+                    'artist' => $row['artist'],
+                    'url' => $row['source_url'],
+                    'download_url' => $row['download_url'],
+                    'img' => $row['img'],
+                ];
+                cacheTrack($track, $md5);
+            }
+        }
+        
+        if ($track) {
+            if ($pdo) logDownload($pdo, $cb_uid, $md5);
             
-            if (empty($tracks)) {
-                Helpers::apiRequestJson('editMessageText', [
-                    'chat_id' => $chatId,
-                    'message_id' => $msgId,
-                    'text' => "❌ Boshqa natija topilmadi.",
+            if ($inline_msg_id) {
+                $fileId = getOrUploadFileId($track, $md5);
+                if ($fileId) {
+                    bot('editMessageMedia', [
+                        'inline_message_id' => $inline_msg_id,
+                        'media' => json_encode([
+                            'type' => 'audio',
+                            'media' => $fileId,
+                            'title' => $track['title'],
+                            'performer' => $track['artist'],
+                            'caption' => "🎵 <b>{$track['artist']}</b> — <b>{$track['title']}</b>",
+                            'parse_mode' => 'HTML',
+                        ]),
+                        'reply_markup' => json_encode([
+                            'inline_keyboard' => [
+                                [['text' => '🎵 Botda qidirish', 'url' => "https://t.me/" . BOT_USER]],
+                            ],
+                        ]),
+                    ]);
+                }
+            } else {
+                botJson('editMessageText', [
+                    'chat_id' => $cb_cid,
+                    'message_id' => $cb_mid,
+                    'text' => "🎵 <b>{$track['artist']}</b> — <b>{$track['title']}</b>\n{$PROGRESS[0]}",
                     'parse_mode' => 'HTML',
                 ]);
-                return;
+                
+                $fileId = getOrUploadFileId($track, $md5);
+                
+                if ($fileId) {
+                    botJson('editMessageText', [
+                        'chat_id' => $cb_cid,
+                        'message_id' => $cb_mid,
+                        'text' => "🎵 <b>{$track['artist']}</b> — <b>{$track['title']}</b>\n{$PROGRESS[10]}",
+                        'parse_mode' => 'HTML',
+                    ]);
+                    
+                    botJson('sendAudio', [
+                        'chat_id' => $cb_cid,
+                        'audio' => $fileId,
+                        'title' => $track['title'],
+                        'performer' => $track['artist'],
+                        'caption' => "🎵 <b>{$track['artist']}</b> — <b>{$track['title']}</b>",
+                        'parse_mode' => 'HTML',
+                        'reply_markup' => json_encode([
+                            'inline_keyboard' => [
+                                [['text' => '🔍 Yana qidirish', 'switch_inline_query_current_chat' => '']],
+                                [['text' => "Kanalga o'tish", 'url' => 'https://t.me/RitmchiUz']],
+                            ],
+                        ]),
+                    ]);
+                    
+                    bot('deleteMessage', ['chat_id' => $cb_cid, 'message_id' => $cb_mid]);
+                } else {
+                    botJson('editMessageText', [
+                        'chat_id' => $cb_cid,
+                        'message_id' => $cb_mid,
+                        'text' => "❌ Yuklashda xato. Qayta urinib ko'ring.",
+                        'parse_mode' => 'HTML',
+                    ]);
+                }
             }
-            
-            $shown = array_slice($tracks, 0, PAGE_SIZE);
-            
-            foreach ($shown as $i => $track) {
-                $key = Helpers::cacheTrack($track);
-                $ready = Helpers::hasFileId($key);
-                $shown[$i]['_key'] = $key;
-            }
-            
-            $text = $this->buildSearchMessage($shown, $query, $page, $result['pagination']['totalPages']);
-            $keyboard = $this->buildTrackKeyboard($shown, $query, $page, $result['pagination']['totalPages']);
-            
-            Helpers::apiRequestJson('editMessageText', [
-                'chat_id' => $chatId,
-                'message_id' => $msgId,
-                'text' => $text,
-                'parse_mode' => 'HTML',
-                'reply_markup' => json_encode(['inline_keyboard' => $keyboard]),
+        } else {
+            bot('answerCallbackQuery', [
+                'callback_query_id' => $cb_id,
+                'text' => "⚠️ Qo'shiq topilmadi",
+                'show_alert' => true,
             ]);
-            
-        } catch (Exception $e) {
-            echo "[MORE] ❌ {$e->getMessage()}\n";
         }
-    }
-    
-    private function buildSearchMessage(array $tracks, string $query, int $page, int $totalPages): string {
-        $list = '';
-        foreach ($tracks as $i => $t) {
-            $key = $t['_key'] ?? Helpers::cacheTrack($t);
-            $ready = Helpers::hasFileId($key);
-            $badge = $ready ? '✅ ' : '';
-            $list .= ($i + 1) . ". {$badge}{$t['artist']} — {$t['title']}\n";
-        }
+    } elseif (strpos($cb_data, 'more:') === 0) {
+        $parts = explode(':', $cb_data, 3);
+        $query = urldecode($parts[1] ?? '');
+        $page = (int)($parts[2] ?? 1);
         
-        $pageInfo = $totalPages > 1 ? "📄 <b>{$page}/{$totalPages}</b> sahifa\n\n" : "\n";
-        return "🎶 <b>{$query}</b> — natijalar\n{$pageInfo}{$list}";
-    }
-    
-    private function buildTrackKeyboard(array $tracks, string $query, int $page, int $totalPages): array {
-        $rows = [];
+        $result = scrapePage($query, $page);
+        $tracks = $result['tracks'];
+        $shown = array_slice($tracks, 0, PAGE_SIZE);
         
-        $row1 = [];
-        for ($i = 0; $i < 5 && $i < count($tracks); $i++) {
-            $key = $tracks[$i]['_key'] ?? '';
-            $ready = Helpers::hasFileId($key);
-            $row1[] = ['text' => ($ready ? '✅' : '') . ($i + 1), 'callback_data' => "dl:{$key}"];
-        }
-        if (!empty($row1)) $rows[] = $row1;
-        
-        $row2 = [];
-        for ($i = 5; $i < 10 && $i < count($tracks); $i++) {
-            $key = $tracks[$i]['_key'] ?? '';
-            $ready = Helpers::hasFileId($key);
-            $row2[] = ['text' => ($ready ? '✅' : '') . ($i + 1), 'callback_data' => "dl:{$key}"];
-        }
-        if (!empty($row2)) $rows[] = $row2;
-        
-        $navRow = [];
-        if ($page > 1) {
-            $navRow[] = ['text' => '◀️', 'callback_data' => "more:" . urlencode($query) . ":" . ($page - 1)];
-        } else {
-            $navRow[] = ['text' => '◀️', 'callback_data' => 'noop'];
-        }
-        $navRow[] = ['text' => '✖️', 'callback_data' => 'close'];
-        if ($page < $totalPages) {
-            $navRow[] = ['text' => '▶️', 'callback_data' => "more:" . urlencode($query) . ":" . ($page + 1)];
-        } else {
-            $navRow[] = ['text' => '▶️', 'callback_data' => 'noop'];
-        }
-        $rows[] = $navRow;
-        
-        $rows[] = [['text' => '🔍 Yangi qidiruv', 'switch_inline_query_current_chat' => '']];
-        $rows[] = [['text' => "🌐 Do'stga ulash", 'switch_inline_query' => $query]];
-        
-        return $rows;
-    }
-    
-    private function buildTrackResult(array $track, string $query): array {
-        $key = Helpers::cacheTrack($track);
-        $cachedFileId = Helpers::getFileId($key);
-        
-        if ($cachedFileId) {
-            return [
-                'type' => 'audio',
-                'id' => $key,
-                'audio_file_id' => $cachedFileId,
-                'title' => $track['title'],
-                'performer' => $track['artist'],
-                'caption' => "🎵 <b>{$track['artist']}</b> — <b>{$track['title']}</b>",
-                'parse_mode' => 'HTML',
-            ];
+        foreach ($shown as $i => $t) {
+            $key = md5hash($t['url']);
+            $shown[$i]['key'] = $key;
+            cacheTrack($t, $key);
         }
         
-        $thumbUrl = $track['img'] ?? null;
-        return [
-            'type' => 'article',
-            'id' => $key,
-            'title' => "🎵 {$track['title']}",
-            'description' => "👤 {$track['artist']} · ⏳ Yuklanadi",
-            'thumb_url' => $thumbUrl,
-            'input_message_content' => [
-                'message_text' => "🎵 <b>{$track['artist']} — {$track['title']}</b>",
-                'parse_mode' => 'HTML',
-            ],
-            'reply_markup' => [
-                'inline_keyboard' => [
-                    [['text' => '⬇️ Yuklab olish', 'callback_data' => "dl:{$key}"]],
-                    [['text' => '🔍 Bu chatda qidirish', 'switch_inline_query_current_chat' => '']],
-                ],
-            ],
-        ];
-    }
-    
-    private function buildAdResult(?array $ad): array {
-        if ($ad) {
-            $thumbUrl = $ad['thumb'] ?: null;
-            return [
-                'type' => 'article',
-                'id' => "ad_{$ad['id']}",
-                'title' => "📢 {$ad['title']}",
-                'description' => $ad['description'],
-                'thumb_url' => $thumbUrl,
-                'input_message_content' => [
-                    'message_text' => "📢 <b>{$ad['title']}</b>\n\n{$ad['description']}",
-                    'parse_mode' => 'HTML',
-                ],
-            ];
-        }
-        
-        return [
-            'type' => 'article',
-            'id' => 'ad_placeholder',
-            'title' => '📢 Bu yerda sizning reklamangiz',
-            'description' => 'Reklama joylashtirish uchun /adinfo',
-            'input_message_content' => [
-                'message_text' => "📢 <b>Bu yerda sizning reklamangiz bo'lishi mumkin!</b>\n\nReklama: /adinfo",
-                'parse_mode' => 'HTML',
-            ],
-        ];
-    }
-    
-    private function checkBackup(): void {
-        $now = microtime(true);
-        
-        if ($now - $this->lastBackup >= $this->backupInterval) {
-            $this->performBackup();
-            $this->lastBackup = $now;
-        }
-    }
-    
-    private function performBackup(): void {
-        $filename = 'backup_' . date('Y-m-d_H-i-s') . '.sql';
-        $filepath = __DIR__ . '/backups/' . $filename;
-        
-        if (!is_dir(__DIR__ . '/backups')) {
-            mkdir(__DIR__ . '/backups', 0755, true);
-        }
-        
-        $pdo = Database::connect();
-        
-        $tables = ['tracks', 'users', 'search_logs', 'ads'];
-        $sql = "-- Music Bot Database Backup\n-- Date: " . date('Y-m-d H:i:s') . "\n\n";
-        
-        foreach ($tables as $table) {
-            $stmt = $pdo->query("SELECT * FROM `{$table}`");
-            $rows = $stmt->fetchAll();
-            
-            if (empty($rows)) continue;
-            
-            $sql .= "INSERT INTO `{$table}` VALUES\n";
-            $values = [];
-            
-            foreach ($rows as $row) {
-                $vals = array_map(fn($v) => $v === null ? 'NULL' : "'" . addslashes($v) . "'", array_values($row));
-                $values[] = '(' . implode(', ', $vals) . ')';
-            }
-            
-            $sql .= implode(",\n", $values) . ";\n\n";
-        }
-        
-        file_put_contents($filepath, $sql);
-        
-        $size = filesize($filepath);
-        echo "✅ Backup created: {$filename} (" . number_format($size / 1024, 2) . " KB)\n";
-        
-        $this->sendBackupToTelegram($filepath);
-        
-        $this->cleanOldBackups();
-    }
-    
-    private function sendBackupToTelegram(string $filepath): void {
-        if (!file_exists($filepath)) return;
-        
-        $filename = basename($filepath);
-        
-        $ch = curl_init();
-        curl_setopt_array($ch, [
-            CURLOPT_URL => 'https://api.telegram.org/bot' . BOT_TOKEN . '/sendDocument',
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 120,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => [
-                'chat_id' => BOT_DUMP_CHAT,
-                'document' => new CURLFile($filepath),
-                'caption' => "📦 Database Backup\n📅 " . date('Y-m-d H:i:s'),
-            ],
+        botJson('editMessageText', [
+            'chat_id' => $cb_cid,
+            'message_id' => $cb_mid,
+            'text' => buildSearchMessage($shown, $query, $page, $result['pagination']['totalPages']),
+            'parse_mode' => 'HTML',
+            'reply_markup' => json_encode(['inline_keyboard' => buildKeyboard($shown, $query, $page, $result['pagination']['totalPages'])]),
         ]);
         
-        $response = curl_exec($ch);
-        curl_close($ch);
-        
-        $result = json_decode($response, true);
-        if ($result['ok'] ?? false) {
-            echo "✅ Backup sent to Telegram\n";
-        }
+        bot('answerCallbackQuery', ['callback_query_id' => $cb_id]);
+    } elseif ($cb_data === 'close') {
+        bot('deleteMessage', ['chat_id' => $cb_cid, 'message_id' => $cb_mid]);
+        bot('answerCallbackQuery', ['callback_query_id' => $cb_id]);
+    } elseif ($cb_data === 'noop') {
+        bot('answerCallbackQuery', ['callback_query_id' => $cb_id]);
+    }
+}
+
+// Inline Query Handler
+elseif ($inline_id) {
+    lg("Inline: $inline_query_text from $uid");
+    
+    if ($pdo) upsertUser($pdo, $inline_query['from']);
+    
+    if (empty($inline_query_text)) {
+        bot('answerInlineQuery', [
+            'inline_query_id' => $inline_id,
+            'results' => json_encode([[
+                'type' => 'article',
+                'id' => 'ad_placeholder',
+                'title' => '📢 Bu yerda sizning reklamangiz',
+                'description' => 'Reklama joylashtirish uchun /adinfo',
+                'input_message_content' => [
+                    'message_text' => "📢 Bu yerda reklama bo'lishi mumkin!",
+                    'parse_mode' => 'HTML',
+                ],
+            ]]),
+            'cache_time' => 0,
+        ]);
+        ob_end_flush();
+        exit;
     }
     
-    private function cleanOldBackups(): void {
-        $backupDir = __DIR__ . '/backups/';
-        $files = glob($backupDir . 'backup_*.sql');
+    try {
+        $result = scrapePage($inline_query_text, $inline_offset);
+        $tracks = $result['tracks'];
         
-        usort($files, fn($a, $b) => filemtime($b) - filemtime($a));
+        if ($pdo) logSearch($pdo, $uid, $inline_query_text, count($tracks), 'inline');
         
-        $keep = 24;
-        $delete = array_slice($files, $keep);
+        if (empty($tracks)) {
+            bot('answerInlineQuery', [
+                'inline_query_id' => $inline_id,
+                'results' => json_encode([]),
+                'cache_time' => 5,
+            ]);
+        } else {
+            $uniqueTracks = [];
+            $seen = [];
+            foreach ($tracks as $t) {
+                $key = md5hash($t['url']);
+                if (!in_array($key, $seen)) {
+                    $seen[] = $key;
+                    $t['key'] = $key;
+                    $uniqueTracks[] = $t;
+                    cacheTrack($t, $key);
+                }
+            }
+            
+            $trackResults = array_map(fn($t) => buildTrackResult($t, $t['key'], $inline_query_text), $uniqueTracks);
+            
+            $nextOffset = $inline_offset < $result['pagination']['totalPages'] ? (string)($inline_offset + 1) : '';
+            
+            bot('answerInlineQuery', [
+                'inline_query_id' => $inline_id,
+                'results' => json_encode(array_values($trackResults)),
+                'next_offset' => $nextOffset,
+                'cache_time' => 300,
+                'is_personal' => false,
+            ]);
+        }
+    } catch (Exception $e) {
+        lg("Inline error: " . $e->getMessage());
+        bot('answerInlineQuery', [
+            'inline_query_id' => $inline_id,
+            'results' => json_encode([]),
+            'cache_time' => 5,
+        ]);
+    }
+}
+
+// Message Handler
+elseif ($cid && $uid && $text) {
+    lg("Message: $text from $uid in $cid");
+    
+    if ($pdo) upsertUser($pdo, $message['from']);
+    
+    // /start
+    if (strpos($text, '/start') === 0) {
+        botJson('sendMessage', [
+            'chat_id' => $cid,
+            'text' => "👋 Salom, <b>{$ismi}</b>!\n\n🎵 Men musiqa qidiruv botiman.\n\n<b>Foydalanish:</b>\n• Qo'shiq nomini yozing\n• Inline: <code>@" . BOT_USER . " qo'shiq</code>",
+            'parse_mode' => 'HTML',
+            'reply_markup' => json_encode([
+                'inline_keyboard' => [
+                    [['text' => '🔍 Bu chatda qidirish', 'switch_inline_query_current_chat' => '']],
+                    [['text' => '🌐 Boshqa chatda', 'switch_inline_query' => '']],
+                    [['text' => "Kanalga o'tish", 'url' => 'https://t.me/RitmchiUz']],
+                ],
+            ]),
+        ]);
+    }
+    // /stats
+    elseif (strpos($text, '/stats') === 0) {
+        $text2 = "📊 <b>Sizning statistikangiz:</b>\n\n";
         
-        foreach ($delete as $file) {
-            unlink($file);
-            echo "🗑️ Deleted old backup: " . basename($file) . "\n";
+        if ($pdo) {
+            $stmt = $pdo->prepare("SELECT total_searches, total_downloads FROM `users` WHERE telegram_id = ?");
+            $stmt->execute([$uid]);
+            $user = $stmt->fetch();
+            $text2 .= "🔍 Jami qidiruvlar: <b>" . ($user['total_searches'] ?? 0) . "</b>\n";
+            $text2 .= "⬇️ Jami yuklab olishlar: <b>" . ($user['total_downloads'] ?? 0) . "</b>";
+        } else {
+            $text2 .= "🔍 Jami qidiruvlar: <b>0</b>\n";
+            $text2 .= "⬇️ Jami yuklab olishlar: <b>0</b>";
+        }
+        
+        botJson('sendMessage', [
+            'chat_id' => $cid,
+            'text' => $text2,
+            'parse_mode' => 'HTML',
+        ]);
+    }
+    // /help
+    elseif (strpos($text, '/help') === 0) {
+        botJson('sendMessage', [
+            'chat_id' => $cid,
+            'text' => "📖 <b>Yordam:</b>\n\n1. Qo'shiq nomi yozing\n2. Nomerini bosing\n3. Inline: <code>@" . BOT_USER . " nomi</code>\n\n📌 /stats - Statistika",
+            'parse_mode' => 'HTML',
+        ]);
+    }
+    // Search
+    elseif (!($message['via_bot'] ?? false)) {
+        $loading = botJson('sendMessage', [
+            'chat_id' => $cid,
+            'text' => "🔍 <b>{$text}</b> qidirilmoqda...",
+            'parse_mode' => 'HTML',
+        ]);
+        $loadingMid = $loading['result']['message_id'] ?? 0;
+        
+        try {
+            $result = scrapePage($text, 1);
+            $tracks = $result['tracks'];
+            
+            if ($pdo) logSearch($pdo, $uid, $text, count($tracks), 'direct');
+            
+            bot('deleteMessage', ['chat_id' => $cid, 'message_id' => $loadingMid]);
+            
+            if (empty($tracks)) {
+                botJson('sendMessage', [
+                    'chat_id' => $cid,
+                    'text' => "❌ <b>{$text}</b> bo'yicha hech narsa topilmadi.",
+                    'parse_mode' => 'HTML',
+                ]);
+            } else {
+                $shown = array_slice($tracks, 0, PAGE_SIZE);
+                
+                foreach ($shown as $i => $t) {
+                    $key = md5hash($t['url']);
+                    $shown[$i]['key'] = $key;
+                    cacheTrack($t, $key);
+                }
+                
+                botJson('sendMessage', [
+                    'chat_id' => $cid,
+                    'text' => buildSearchMessage($shown, $text, 1, $result['pagination']['totalPages']),
+                    'parse_mode' => 'HTML',
+                    'reply_markup' => json_encode(['inline_keyboard' => buildKeyboard($shown, $text, 1, $result['pagination']['totalPages'])]),
+                ]);
+            }
+        } catch (Exception $e) {
+            lg("Search error: " . $e->getMessage());
+            botJson('editMessageText', [
+                'chat_id' => $cid,
+                'message_id' => $loadingMid,
+                'text' => "❌ Qidiruvda xato. Qayta urinib ko'ring.",
+                'parse_mode' => 'HTML',
+            ]);
         }
     }
 }
 
-if (php_sapi_name() === 'cli') {
-    $bot = new MusicBot();
-    $bot->run();
-}
+lg('=== REQUEST COMPLETE ===');
+ob_end_flush();
