@@ -133,7 +133,7 @@ $inline_msg_id = $callback_query['inline_message_id'] ?? '';
 // Inline variables
 $inline_id = $inline_query['id'] ?? '';
 $inline_query_text = trim($inline_query['query'] ?? '');
-$inline_offset = (int)($inline_query['offset'] ?: 1);
+$inline_offset = isset($inline_query['offset']) ? (int)$inline_query['offset'] : 1;
 
 // Database
 $pdo = null;
