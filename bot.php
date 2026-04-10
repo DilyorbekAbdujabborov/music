@@ -370,34 +370,47 @@ function searchYoutube($query) {
 function getDownloadUrl($videoId) {
     lg("Converting video: $videoId");
     
-    $ch = curl_init();
-    curl_setopt_array($ch, [
-        CURLOPT_URL => 'https://ht.flvto.online/converter',
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode(['id' => $videoId, 'fileType' => 'MP3']),
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'Accept: application/json',
-            'Referer: https://www39.tubidy.buzz/',
-            'Origin: https://www39.tubidy.buzz',
-            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
-        ],
-        CURLOPT_TIMEOUT => 30,
-    ]);
-    $res = curl_exec($ch);
-    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
+    $urls = [
+        'https://www.flvto.app/api/convert',
+        'https://flvto.app/api/convert',
+        'https://convert.tubidy.io/api/convert',
+    ];
     
-    lg("Convert response code: $code, data: " . substr($res, 0, 200));
-    
-    if ($res) {
-        $data = json_decode($res, true);
-        if ($data && $data['status'] === 'ok' && !empty($data['link'])) {
-            lg("Got download link: " . substr($data['link'], 0, 80));
-            return $data['link'];
+    foreach ($urls as $url) {
+        lg("Trying: $url");
+        
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode(['id' => $videoId, 'fileType' => 'mp3']),
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Accept: application/json, text/plain, */*',
+                'Referer: https://www.flvto.app/',
+                'Origin: https://www.flvto.app',
+                'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            ],
+            CURLOPT_TIMEOUT => 30,
+        ]);
+        $res = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        lg("Convert response code: $code, data: " . substr($res, 0, 300));
+        
+        if ($res && $code === 200) {
+            $data = json_decode($res, true);
+            if ($data && ($data['status'] === 'ok' || !empty($data['link']))) {
+                $link = $data['link'] ?? $data['url'] ?? null;
+                if ($link) {
+                    lg("Got download link: " . substr($link, 0, 80));
+                    return $link;
+                }
+            }
+            lg("Convert response: " . substr($res, 0, 100));
         }
-        lg("Convert failed: " . ($data['msg'] ?? 'unknown'));
     }
     
     return null;
@@ -934,11 +947,18 @@ if ($cb_id) {
                     bot('deleteMessage', ['chat_id' => $cb_cid, 'message_id' => $cb_mid]);
                 } else {
                     lg("Upload FAILED for: " . $track['title']);
+                    $youtubeUrl = 'https://youtu.be/' . ($track['download_url'] ?? '');
                     botJson('editMessageText', [
                         'chat_id' => $cb_cid,
                         'message_id' => $cb_mid,
-                        'text' => "❌ Yuklashda xato. Qayta urinib ko'ring.",
+                        'text' => "❌ <b>Yuklashda xato bo'ldi.</b>\n\n🎵 <b>{$track['artist']}</b> — <b>{$track['title']}</b>\n\n🔗 <a href=\"{$youtubeUrl}\">YouTube da tinglang</a>",
                         'parse_mode' => 'HTML',
+                        'reply_markup' => json_encode([
+                            'inline_keyboard' => [
+                                [['text' => '🔗 YouTube da yuklab oling', 'url' => $youtubeUrl]],
+                                [['text' => '🔍 Yana qidirish', 'switch_inline_query_current_chat' => '']],
+                            ],
+                        ]),
                     ]);
                 }
             }
