@@ -861,6 +861,7 @@ if ($cb_id) {
     
     if (strpos($cb_data, 'dl:') === 0) {
         $md5 = substr($cb_data, 3);
+        lg("Download start: $md5");
         $track = getCachedTrack($md5);
         
         if (!$track && $pdo) {
@@ -876,10 +877,19 @@ if ($cb_id) {
                     'img' => $row['img'],
                 ];
                 cacheTrack($track, $md5);
+                lg("Track from DB: " . json_encode($track));
             }
         }
         
-        if ($track) {
+        if (!$track) {
+            lg("Track NOT found for md5: $md5");
+            bot('answerCallbackQuery', [
+                'callback_query_id' => $cb_id,
+                'text' => "⚠️ Qo'shiq topilmadi",
+                'show_alert' => true,
+            ]);
+        } else {
+            lg("Track found, uploading: " . $track['title']);
             if ($pdo) logDownload($pdo, $cb_uid, $md5);
             
             if ($inline_msg_id) {
@@ -913,6 +923,7 @@ if ($cb_id) {
                 $fileId = getOrUploadFileId($track, $md5);
                 
                 if ($fileId) {
+                    lg("Upload success: $fileId");
                     botJson('editMessageText', [
                         'chat_id' => $cb_cid,
                         'message_id' => $cb_mid,
@@ -937,6 +948,7 @@ if ($cb_id) {
                     
                     bot('deleteMessage', ['chat_id' => $cb_cid, 'message_id' => $cb_mid]);
                 } else {
+                    lg("Upload FAILED for: " . $track['title']);
                     botJson('editMessageText', [
                         'chat_id' => $cb_cid,
                         'message_id' => $cb_mid,
@@ -945,12 +957,6 @@ if ($cb_id) {
                     ]);
                 }
             }
-        } else {
-            bot('answerCallbackQuery', [
-                'callback_query_id' => $cb_id,
-                'text' => "⚠️ Qo'shiq topilmadi",
-                'show_alert' => true,
-            ]);
         }
     } elseif (strpos($cb_data, 'more:') === 0) {
         $parts = explode(':', $cb_data, 3);
