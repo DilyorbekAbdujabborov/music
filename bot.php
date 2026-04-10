@@ -566,7 +566,7 @@ function scrapePage($query, $page = 1, $domain = null) {
     }
     
     $base = $domain['base'];
-    $download = $domain['download'];
+    $download = $domain['download'] ?? '';
     $start = ($page - 1) * ITEMS_PER_PAGE;
     
     // YouTube API - mp3juice3.ninja
