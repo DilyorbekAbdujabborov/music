@@ -638,17 +638,23 @@ function buildKeyboard($tracks, $query, $page, $totalPages) {
     
     $row1 = [];
     for ($i = 0; $i < 5 && $i < count($tracks); $i++) {
-        $key = $tracks[$i]['key'];
+        $t = $tracks[$i];
+        $videoId = $t['url'] ?? '';
+        $key = md5hash($videoId);
         $ready = hasFileId($key) ? '✅' : '';
-        $row1[] = ['text' => $ready . ($i + 1), 'callback_data' => "dl:$key"];
+        $cbData = "dl:" . rawurlencode($videoId) . "::" . rawurlencode($t['title'] ?? '') . "::" . rawurlencode($t['artist'] ?? '') . "::" . rawurlencode($t['img'] ?? '');
+        $row1[] = ['text' => $ready . ($i + 1), 'callback_data' => $cbData];
     }
     if ($row1) $rows[] = $row1;
     
     $row2 = [];
     for ($i = 5; $i < 10 && $i < count($tracks); $i++) {
-        $key = $tracks[$i]['key'];
+        $t = $tracks[$i];
+        $videoId = $t['url'] ?? '';
+        $key = md5hash($videoId);
         $ready = hasFileId($key) ? '✅' : '';
-        $row2[] = ['text' => $ready . ($i + 1), 'callback_data' => "dl:$key"];
+        $cbData = "dl:" . rawurlencode($videoId) . "::" . rawurlencode($t['title'] ?? '') . "::" . rawurlencode($t['artist'] ?? '') . "::" . rawurlencode($t['img'] ?? '');
+        $row2[] = ['text' => $ready . ($i + 1), 'callback_data' => $cbData];
     }
     if ($row2) $rows[] = $row2;
     
@@ -675,7 +681,8 @@ function buildKeyboard($tracks, $query, $page, $totalPages) {
 function buildSearchMessage($tracks, $query, $page, $totalPages) {
     $list = '';
     foreach ($tracks as $i => $t) {
-        $ready = hasFileId($t['key']) ? '✅ ' : '';
+        $key = md5hash($t['url'] ?? '');
+        $ready = hasFileId($key) ? '✅ ' : '';
         $list .= ($i + 1) . ". {$ready}{$t['artist']} — {$t['title']}\n";
     }
     
@@ -683,7 +690,15 @@ function buildSearchMessage($tracks, $query, $page, $totalPages) {
     return "🎶 <b>{$query}</b> — natijalar\n{$pageInfo}{$list}";
 }
 
-function buildTrackResult($track, $key, $query) {
+function buildTrackResult($track, $query) {
+    $videoId = $track['url'] ?? '';
+    $key = md5hash($videoId);
+    $title = $track['title'] ?? '';
+    $artist = $track['artist'] ?? '';
+    $thumb = $track['img'] ?? '';
+    
+    $cbData = "dl:" . rawurlencode($videoId) . "::" . rawurlencode($title) . "::" . rawurlencode($artist) . "::" . rawurlencode($thumb);
+    
     $cachedFileId = getFileId($key);
     
     if ($cachedFileId) {
@@ -691,9 +706,9 @@ function buildTrackResult($track, $key, $query) {
             'type' => 'audio',
             'id' => $key,
             'audio_file_id' => $cachedFileId,
-            'title' => $track['title'],
-            'performer' => $track['artist'],
-            'caption' => "🎵 <b>{$track['artist']}</b> — <b>{$track['title']}</b>",
+            'title' => $title,
+            'performer' => $artist,
+            'caption' => "🎵 <b>{$artist}</b> — <b>{$title}</b>",
             'parse_mode' => 'HTML',
         ];
     }
@@ -701,16 +716,16 @@ function buildTrackResult($track, $key, $query) {
     return [
         'type' => 'article',
         'id' => $key,
-        'title' => "🎵 {$track['title']}",
-        'description' => "👤 {$track['artist']} · ⏳ Yuklanadi",
-        'thumb_url' => $track['img'] ?? null,
+        'title' => "🎵 {$title}",
+        'description' => "👤 {$artist} · ⏳ Yuklanadi",
+        'thumb_url' => $thumb ?: null,
         'input_message_content' => [
-            'message_text' => "🎵 <b>{$track['artist']}</b> — <b>{$track['title']}</b>",
+            'message_text' => "🎵 <b>{$artist}</b> — <b>{$title}</b>",
             'parse_mode' => 'HTML',
         ],
         'reply_markup' => [
             'inline_keyboard' => [
-                [['text' => '⬇️ Yuklab olish', 'callback_data' => "dl:$key"]],
+                [['text' => '⬇️ Yuklab olish', 'callback_data' => $cbData]],
                 [['text' => '🔍 Bu chatda', 'switch_inline_query_current_chat' => '']],
             ],
         ],
@@ -838,39 +853,31 @@ if ($cb_id) {
     ]);
     
     if (strpos($cb_data, 'dl:') === 0) {
-        $md5 = substr($cb_data, 3);
-        lg("Download start: $md5");
-        $track = getCachedTrack($md5);
+        $callbackData = substr($cb_data, 3);
         
-        if (!$track && $pdo) {
-            $stmt = $pdo->prepare("SELECT * FROM `tracks` WHERE md5 = ?");
-            $stmt->execute([$md5]);
-            $row = $stmt->fetch();
-            if ($row) {
-                $track = [
-                    'title' => $row['title'],
-                    'artist' => $row['artist'],
-                    'url' => $row['source_url'],
-                    'download_url' => $row['download_url'],
-                    'img' => $row['img'],
-                ];
-                cacheTrack($track, $md5);
-                lg("Track from DB: " . json_encode($track));
-            }
-        }
+        // Format: dl:videoId::Title::Artist::Thumb
+        $parts = explode('::', $callbackData, 4);
+        $videoId = $parts[0];
+        $title = $parts[1] ?? 'Unknown';
+        $artist = $parts[2] ?? 'Unknown';
+        $thumb = $parts[3] ?? '';
         
-        if (!$track) {
-            lg("Track NOT found for md5: $md5");
-            bot('answerCallbackQuery', [
-                'callback_query_id' => $cb_id,
-                'text' => "⚠️ Qo'shiq topilmadi",
-                'show_alert' => true,
-            ]);
-        } else {
-            lg("Track found, uploading: " . $track['title']);
-            if ($pdo) logDownload($pdo, $cb_uid, $md5);
-            
-            if ($inline_msg_id) {
+        lg("Download start: videoId=$videoId, title=$title");
+        
+        $track = [
+            'title' => urldecode($title),
+            'artist' => urldecode($artist),
+            'url' => $videoId,
+            'download_url' => $videoId,
+            'img' => urldecode($thumb),
+            'source' => 'youtube',
+        ];
+        
+        $md5 = md5($videoId);
+        
+        if ($pdo) logDownload($pdo, $cb_uid, $md5);
+        
+        if ($inline_msg_id) {
                 $fileId = getOrUploadFileId($track, $md5);
                 if ($fileId) {
                     bot('editMessageMedia', [
@@ -936,7 +943,8 @@ if ($cb_id) {
                 }
             }
         }
-    } elseif (strpos($cb_data, 'more:') === 0) {
+        
+        if (strpos($cb_data, 'more:') === 0) {
         $parts = explode(':', $cb_data, 3);
         $query = urldecode($parts[1] ?? '');
         $page = (int)($parts[2] ?? 1);
@@ -947,7 +955,6 @@ if ($cb_id) {
         
         foreach ($shown as $i => $t) {
             $key = md5hash($t['url']);
-            $shown[$i]['key'] = $key;
             cacheTrack($t, $key);
         }
         
@@ -1012,13 +1019,12 @@ elseif ($inline_id) {
                 $key = md5hash($t['url']);
                 if (!in_array($key, $seen)) {
                     $seen[] = $key;
-                    $t['key'] = $key;
                     $uniqueTracks[] = $t;
                     cacheTrack($t, $key);
                 }
             }
             
-            $trackResults = array_map(fn($t) => buildTrackResult($t, $t['key'], $inline_query_text), $uniqueTracks);
+            $trackResults = array_map(fn($t) => buildTrackResult($t, $inline_query_text), $uniqueTracks);
             
             $nextOffset = $inline_offset < $result['pagination']['totalPages'] ? (string)($inline_offset + 1) : '';
             
@@ -1118,7 +1124,6 @@ elseif ($cid && $uid && $text) {
                 
                 foreach ($shown as $i => $t) {
                     $key = md5hash($t['url']);
-                    $shown[$i]['key'] = $key;
                     cacheTrack($t, $key);
                 }
                 
